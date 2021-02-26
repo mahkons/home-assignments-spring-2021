@@ -16,6 +16,7 @@ import click
 import cv2
 import numpy as np
 import pims
+import scipy.spatial
 
 import itertools
 
@@ -72,15 +73,15 @@ def _build_impl(frame_sequence: pims.FramesSequence,
         corners = corners[status == 1]
         ids = ids[status == 1]
 
-        new_corners = cv2.goodFeaturesToTrack(image_1, maxCorners=MAX_CORNERS, qualityLevel=QUALITY_LEVEL,
+        new_corners = cv2.goodFeaturesToTrack(image_1, maxCorners=MAX_CORNERS-len(corners), qualityLevel=QUALITY_LEVEL,
                 minDistance=MIN_DISTANCE, corners=None, mask=None, blockSize=BLOCK_SIZE, useHarrisDetector=False)
         if new_corners is None:
             new_corners = np.empty((0, 2), corners.dtype)
         else:
             new_corners = new_corners.squeeze(1)
 
-        dist = np.linalg.norm(corners[None, :] - new_corners[:, None], axis=2)
-        new_corners = new_corners[np.min(dist, axis=1) >= MIN_DISTANCE, :]
+        dist = scipy.spatial.distance_matrix(corners, new_corners)
+        new_corners = new_corners[np.min(dist, axis=0) >= MIN_DISTANCE, :]
 
         corners = np.concatenate((corners, new_corners))
         ids = np.concatenate((ids, np.array([next(ids_generator) for _ in range(len(new_corners))], dtype=np.int32)))
