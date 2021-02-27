@@ -67,7 +67,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     print(points3d)
     print(median_cos)
 
-    for i in range(10):
+    for i in range(frame_count):
         print(i)
         if i in view_mats:
             print(view_mats[i])
@@ -85,6 +85,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         print(view_mats[i])
 
         fr, sc = i, known_view_2[0]
+        if abs(i - known_view_1[0]) > abs(i - known_view_2[0]):
+            fr, sc = i, known_view_1[0]
         points3d, pids, median_cos = triangulate_correspondences(
             build_correspondences(corner_storage[fr], corner_storage[sc], pcb.ids),
             view_mats[fr], view_mats[sc],
