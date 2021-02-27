@@ -7,6 +7,8 @@ __all__ = [
 from typing import List, Optional, Tuple
 
 import numpy as np
+import sortednp as snp
+import cv2
 
 from corners import CornerStorage
 from data3d import CameraParameters, PointCloud, Pose
@@ -17,7 +19,11 @@ from _camtrack import (
     calc_point_cloud_colors,
     pose_to_view_mat3x4,
     to_opencv_camera_mat3x3,
-    view_mat3x4_to_pose
+    view_mat3x4_to_pose,
+    build_correspondences,
+    triangulate_correspondences,
+    TriangulationParameters,
+    rodrigues_and_translation_to_view_mat3x4,
 )
 
 
@@ -36,22 +42,75 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         rgb_sequence[0].shape[0]
     )
 
-    # TODO: implement
-    frame_count = len(corner_storage)
-    view_mats = [pose_to_view_mat3x4(known_view_1[1])] * frame_count
-    corners_0 = corner_storage[0]
-    point_cloud_builder = PointCloudBuilder(corners_0.ids[:1],
-                                            np.zeros((1, 3)))
 
+    triangulation_params = TriangulationParameters(
+        max_reprojection_error=5.,
+        min_triangulation_angle_deg=0.01,
+        min_depth=1.
+    )
+
+    frame_count = len(corner_storage)
+    view_mats = {
+        known_view_1[0]: pose_to_view_mat3x4(known_view_1[1]),
+        known_view_2[0]: pose_to_view_mat3x4(known_view_2[1]),
+    }
+
+    fr, sc = known_view_1[0], known_view_2[0]
+    points3d, pids, median_cos = triangulate_correspondences(
+        build_correspondences(corner_storage[fr], corner_storage[sc]),
+        view_mats[fr], view_mats[sc],
+        intrinsic_mat,
+        triangulation_params
+    )
+    pcb = PointCloudBuilder(pids, points3d)
+
+    print(points3d)
+    print(median_cos)
+
+    for i in range(frame_count):
+        print(i)
+        if i in view_mats:
+            print(view_mats[i])
+            continue
+        
+        common_ids, ind = snp.intersect(pcb.ids.squeeze(1), corner_storage[i].ids.squeeze(1), indices=True)
+        points_cloud = pcb.points[ind[0]]
+        points_corners = corner_storage[i].points[ind[1]]
+
+        normalized_points_corners = cv2.undistortPoints(
+            points_corners.reshape(-1, 1, 2),
+            intrinsic_mat,
+            np.array([])
+        ).reshape(-1, 2)
+
+        retval, rvecs, tvecs, inliers = cv2.solvePnPRansac(points_cloud, normalized_points_corners.reshape(-1, 1, 2), intrinsic_mat,
+                np.array([]), flags=cv2.SOLVEPNP_ITERATIVE, iterationsCount=100, reprojectionError=5., confidence=0.99)
+        view_mats[i] = rodrigues_and_translation_to_view_mat3x4(rvecs, tvecs)
+        
+        print(len(inliers))
+        print(view_mats[i])
+
+        fr, sc = i, known_view_1[0]
+        points3d, pids, median_cos = triangulate_correspondences(
+            build_correspondences(corner_storage[fr], corner_storage[sc], pcb.ids),
+            view_mats[fr], view_mats[sc],
+            intrinsic_mat,
+            triangulation_params
+        )
+        print(median_cos)
+        pcb.add_points(pids, points3d)
+        
+
+    view_mats = [view_mats[key] for key in sorted(view_mats.keys())]
     calc_point_cloud_colors(
-        point_cloud_builder,
+        pcb,
         rgb_sequence,
         view_mats,
         intrinsic_mat,
         corner_storage,
         5.0
     )
-    point_cloud = point_cloud_builder.build_point_cloud()
+    point_cloud = pcb.build_point_cloud()
     poses = list(map(view_mat3x4_to_pose, view_mats))
     return poses, point_cloud
 
