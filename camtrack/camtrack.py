@@ -44,7 +44,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
 
     triangulation_params = TriangulationParameters(
-        max_reprojection_error=5.,
+        max_reprojection_error=1.,
         min_triangulation_angle_deg=0.01,
         min_depth=1.
     )
@@ -67,7 +67,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     print(points3d)
     print(median_cos)
 
-    for i in range(frame_count):
+    for i in range(10):
         print(i)
         if i in view_mats:
             print(view_mats[i])
@@ -77,20 +77,14 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         points_cloud = pcb.points[ind[0]]
         points_corners = corner_storage[i].points[ind[1]]
 
-        normalized_points_corners = cv2.undistortPoints(
-            points_corners.reshape(-1, 1, 2),
-            intrinsic_mat,
-            np.array([])
-        ).reshape(-1, 2)
-
-        retval, rvecs, tvecs, inliers = cv2.solvePnPRansac(points_cloud, normalized_points_corners.reshape(-1, 1, 2), intrinsic_mat,
-                np.array([]), flags=cv2.SOLVEPNP_ITERATIVE, iterationsCount=100, reprojectionError=5., confidence=0.99)
+        retval, rvecs, tvecs, inliers = cv2.solvePnPRansac(points_cloud, points_corners.reshape(-1, 1, 2), intrinsic_mat,
+                np.array([]), flags=cv2.SOLVEPNP_ITERATIVE, iterationsCount=100, reprojectionError=1., confidence=0.99)
         view_mats[i] = rodrigues_and_translation_to_view_mat3x4(rvecs, tvecs)
         
         print(len(inliers))
         print(view_mats[i])
 
-        fr, sc = i, known_view_1[0]
+        fr, sc = i, known_view_2[0]
         points3d, pids, median_cos = triangulate_correspondences(
             build_correspondences(corner_storage[fr], corner_storage[sc], pcb.ids),
             view_mats[fr], view_mats[sc],
