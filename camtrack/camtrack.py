@@ -9,6 +9,7 @@ from typing import List, Optional, Tuple
 import numpy as np
 import sortednp as snp
 import cv2
+import click
 
 from corners import CornerStorage
 from data3d import CameraParameters, PointCloud, Pose
@@ -24,6 +25,7 @@ from _camtrack import (
     triangulate_correspondences,
     TriangulationParameters,
     rodrigues_and_translation_to_view_mat3x4,
+    calc_inlier_indices,
 )
 
 
@@ -42,11 +44,13 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         rgb_sequence[0].shape[0]
     )
 
-
+    MIN_COMMON_IDS = 10
+    MAX_ERROR = 5.
+    ERROR_TO_REMOVE = 20.
     triangulation_params = TriangulationParameters(
-        max_reprojection_error=1.,
-        min_triangulation_angle_deg=0.01,
-        min_depth=1.
+        max_reprojection_error=MAX_ERROR,
+        min_triangulation_angle_deg=2.,
+        min_depth=0.1
     )
 
     frame_count = len(corner_storage)
@@ -60,41 +64,67 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         build_correspondences(corner_storage[fr], corner_storage[sc]),
         view_mats[fr], view_mats[sc],
         intrinsic_mat,
-        triangulation_params
+        triangulation_params._replace(min_triangulation_angle_deg=0.5)
     )
     pcb = PointCloudBuilder(pids, points3d)
 
-    print(points3d)
-    print(median_cos)
+    any_updated = True
+    while any_updated:
+        any_updated = False
 
-    for i in range(frame_count):
-        print(i)
-        if i in view_mats:
-            print(view_mats[i])
-            continue
-        
-        common_ids, ind = snp.intersect(pcb.ids.squeeze(1), corner_storage[i].ids.squeeze(1), indices=True)
-        points_cloud = pcb.points[ind[0]]
-        points_corners = corner_storage[i].points[ind[1]]
+        for i in range(frame_count):
+            if i in view_mats:
+                continue
+            common_ids, ind = snp.intersect(pcb.ids.squeeze(1), corner_storage[i].ids.squeeze(1), indices=True)
+            points_cloud = pcb.points[ind[0]]
+            points_corners = corner_storage[i].points[ind[1]]
 
-        retval, rvecs, tvecs, inliers = cv2.solvePnPRansac(points_cloud, points_corners.reshape(-1, 1, 2), intrinsic_mat,
-                np.array([]), flags=cv2.SOLVEPNP_ITERATIVE, iterationsCount=100, reprojectionError=1., confidence=0.99)
-        view_mats[i] = rodrigues_and_translation_to_view_mat3x4(rvecs, tvecs)
-        
-        print(len(inliers))
-        print(view_mats[i])
+            if len(common_ids) < MIN_COMMON_IDS:
+                continue
 
-        fr, sc = i, known_view_2[0]
-        if abs(i - known_view_1[0]) > abs(i - known_view_2[0]):
-            fr, sc = i, known_view_1[0]
-        points3d, pids, median_cos = triangulate_correspondences(
-            build_correspondences(corner_storage[fr], corner_storage[sc], pcb.ids),
-            view_mats[fr], view_mats[sc],
-            intrinsic_mat,
-            triangulation_params
-        )
-        print(median_cos)
-        pcb.add_points(pids, points3d)
+            click.echo("Processing frame: {}".format(i))
+
+            retval, rvecs, tvecs, inliers = cv2.solvePnPRansac(points_cloud, points_corners.reshape(-1, 1, 2), intrinsic_mat,
+                    np.array([]), flags=cv2.SOLVEPNP_ITERATIVE, iterationsCount=500, reprojectionError=MAX_ERROR,
+                    confidence=0.999)
+
+            if not retval:
+                click.echo("Camera position was not found")
+                continue
+            click.echo("Camera posisition found")
+            click.echo("Inliers count: {}".format(len(inliers)))
+
+            view_mats[i] = rodrigues_and_translation_to_view_mat3x4(rvecs, tvecs)
+            any_updated = True
+
+            
+            outliers_ids = np.delete(common_ids, inliers)
+            cnt_added = 0
+            for j in view_mats.keys():
+                if i == j:
+                    continue
+                fr, sc = i, j
+                points3d, pids, median_cos = triangulate_correspondences(
+                    build_correspondences(corner_storage[fr], corner_storage[sc], np.concatenate([pcb.ids, outliers_ids[:, None]])),
+                    view_mats[fr], view_mats[sc],
+                    intrinsic_mat,
+                    triangulation_params
+                )
+                cnt_added += len(pids)
+                pcb.add_points(pids, points3d)
+
+            cnt_removed = 0
+            for j in view_mats.keys():
+                common_ids, ind = snp.intersect(pcb.ids.squeeze(1), corner_storage[j].ids.squeeze(1), indices=True)
+                points_cloud = pcb.points[ind[0]]
+                points_corners = corner_storage[j].points[ind[1]]
+                inliers = calc_inlier_indices(points_cloud, points_corners, intrinsic_mat @ view_mats[j], ERROR_TO_REMOVE)
+                pcb.remove_points(np.delete(common_ids, inliers))
+                cnt_removed += len(common_ids) - len(inliers)
+
+            click.echo("PointCloud size: {} Added: {} Removed: {}".format(len(pcb.ids), cnt_added, cnt_removed))
+
+    assert(len(view_mats.keys()) == frame_count and "Not all camera positions found")
         
 
     view_mats = [view_mats[key] for key in sorted(view_mats.keys())]
