@@ -15,3 +15,4 @@ scikit-learn
 scipy
 sortednp
 transforms3d
+torch
